@@ -331,6 +331,45 @@ def product_exists(name: str) -> bool:
     return get_product_by_name(name) is not None
 
 
+def product_exists_in_category(name: str, category: str, exclude_id: int | None = None) -> bool:
+    products = load_products()
+    if products.empty:
+        return False
+    mask = (
+        products["name"].astype(str).str.lower().eq(name.strip().lower())
+        & products["category"].astype(str).str.lower().eq(category.strip().lower())
+    )
+    if exclude_id is not None:
+        mask = mask & (products["id"] != exclude_id)
+    return products[mask].shape[0] > 0
+
+
+def get_unique_categories(include_all: bool = False) -> list[str]:
+    categories = load_categories()
+    items = sorted(categories["name"].dropna().astype(str).unique().tolist()) if not categories.empty else []
+    if include_all:
+        return ["Todas las categorías"] + items
+    return items
+
+
+def get_products_by_category(category: str | None = None) -> pd.DataFrame:
+    products = load_products()
+    if products.empty:
+        return products
+    if not category or category == "Todas las categorías":
+        return products
+    return products[products["category"] == category].copy()
+
+
+def filter_sales_by_category_product(sales_df: pd.DataFrame, category: str, product: str) -> pd.DataFrame:
+    filtered = sales_df.copy()
+    if category != "Todas las categorías":
+        filtered = filtered[filtered["product_category"] == category]
+    if product != "Todos los productos":
+        filtered = filtered[filtered["product_name"] == product]
+    return filtered
+
+
 def update_product(product_id: int, name: str, category: str, stock: int, cost_price: float, sale_price: float) -> None:
     products = load_products()
     idx = products.index[products["id"] == product_id]
@@ -707,96 +746,77 @@ def generate_excel_file(products_df: pd.DataFrame, sales_df: pd.DataFrame, costs
 def inventory_tab() -> None:
     st.subheader("Inventario de productos")
 
-    with st.form("add_product_form", clear_on_submit=True):
-        products = load_products()
-        categories = load_categories()
+    if "show_new_category_form" not in st.session_state:
+        st.session_state.show_new_category_form = False
+    if "show_new_product_form" not in st.session_state:
+        st.session_state.show_new_product_form = False
 
-        existing_products = sorted(products["name"].dropna().astype(str).unique().tolist()) if not products.empty else []
-        existing_categories = sorted(categories["name"].dropna().astype(str).unique().tolist()) if not categories.empty else []
+    b1, b2 = st.columns(2)
+    if b1.button("Agregar nueva categoría"):
+        st.session_state.show_new_category_form = not st.session_state.show_new_category_form
+    if b2.button("Agregar nuevo producto"):
+        st.session_state.show_new_product_form = not st.session_state.show_new_product_form
 
-        c1, c2, c3 = st.columns(3)
-        product_option = c1.selectbox(
-            "Producto",
-            options=["➕ Agregar nuevo producto"] + existing_products,
-            index=0,
-        )
-        category_option = c2.selectbox(
-            "Categoría",
-            options=["➕ Agregar nueva categoría"] + existing_categories,
-            index=0,
-        )
-        stock = c3.number_input("Stock", min_value=0, step=1)
-
-        new_product_name = ""
-        if product_option == "➕ Agregar nuevo producto":
-            new_product_name = st.text_input("Nombre del nuevo producto")
-
-        new_category_name = ""
-        if category_option == "➕ Agregar nueva categoría":
-            new_category_name = st.text_input("Nombre de la nueva categoría")
-
-        c4, c5 = st.columns(2)
-        cost_price = c4.number_input("Costo (precio de compra)", min_value=0.0, step=0.01)
-        sale_price = c5.number_input("Precio de venta", min_value=0.0, step=0.01)
-
-        submitted = st.form_submit_button("Agregar producto")
-        if submitted:
-            final_category = category_option
-            if category_option == "➕ Agregar nueva categoría":
+    if st.session_state.show_new_category_form:
+        with st.form("create_category_form", clear_on_submit=True):
+            new_category_name = st.text_input("Nombre de la categoría")
+            create_category = st.form_submit_button("Guardar categoría")
+            if create_category:
                 ok, msg = add_category(new_category_name)
-                if not ok:
+                if ok:
+                    st.success(msg)
+                    st.rerun()
+                else:
                     st.error(msg)
-                    return
-                final_category = new_category_name.strip()
-                st.success(msg)
 
-            if product_option == "➕ Agregar nuevo producto":
-                final_product_name = new_product_name.strip()
-                if not final_product_name:
+    if st.session_state.show_new_product_form:
+        with st.form("create_product_form", clear_on_submit=True):
+            categories = get_unique_categories()
+            if not categories:
+                st.info("Primero debes crear al menos una categoría.")
+            product_name = st.text_input("Nombre del producto")
+            category = st.selectbox("Categoría del producto", options=categories if categories else [""])
+            stock = st.number_input("Stock inicial", min_value=0, step=1)
+            c1, c2 = st.columns(2)
+            cost_price = c1.number_input("Costo (precio de compra)", min_value=0.0, step=0.01)
+            sale_price = c2.number_input("Precio de venta", min_value=0.0, step=0.01)
+            create_product = st.form_submit_button("Guardar producto")
+            if create_product:
+                clean_product = product_name.strip()
+                if not clean_product:
                     st.error("El nombre del producto es obligatorio.")
-                    return
-                if product_exists(final_product_name):
-                    st.error("El producto ya existe.")
-                    return
-                add_product(final_product_name, final_category, int(stock), float(cost_price), float(sale_price))
-                st.success("Producto agregado.")
-                st.rerun()
-            else:
-                existing = get_product_by_name(product_option)
-                if existing is None:
-                    st.error("No se encontró el producto seleccionado.")
-                    return
-                update_product(
-                    int(existing["id"]),
-                    product_option,
-                    final_category,
-                    int(stock),
-                    float(cost_price),
-                    float(sale_price),
-                )
-                st.success("Producto actualizado.")
-                st.rerun()
+                elif not category:
+                    st.error("Debes seleccionar una categoría.")
+                elif product_exists_in_category(clean_product, category):
+                    st.error("Ya existe un producto con ese nombre en la categoría seleccionada.")
+                else:
+                    add_product(clean_product, category, int(stock), float(cost_price), float(sale_price))
+                    st.success("Producto agregado correctamente.")
+                    st.rerun()
 
     products = load_products()
-    st.markdown("### Productos actuales")
-    st.dataframe(products, use_container_width=True)
+    categories = get_unique_categories(include_all=True)
+    selected_category_filter = st.selectbox("Filtrar inventario por categoría", options=categories, key="inventory_category_filter")
+    filtered_products = get_products_by_category(selected_category_filter)
 
-    if products.empty:
+    st.markdown("### Productos actuales")
+    st.dataframe(filtered_products, use_container_width=True)
+
+    if filtered_products.empty:
+        st.info("No hay productos para la categoría seleccionada.")
         return
 
-    st.markdown("### Editar producto")
-    selected_id = st.selectbox(
-        "Selecciona un producto para editar",
-        options=products["id"].tolist(),
-        format_func=lambda pid: f"{pid} - {products.loc[products['id'] == pid, 'name'].iloc[0]}",
-        key="edit_product",
-    )
-    selected = products[products["id"] == selected_id].iloc[0]
+    product_names = filtered_products["name"].tolist()
+    selected_product_name = st.selectbox("Producto", options=product_names, key="inventory_product_filter")
+    selected = filtered_products[filtered_products["name"] == selected_product_name].iloc[0]
+    selected_id = int(selected["id"])
 
     with st.form("edit_product_form"):
         e1, e2, e3 = st.columns(3)
         edit_name = e1.text_input("Nombre", value=str(selected["name"]))
-        edit_category = e2.text_input("Categoría", value=str(selected["category"]))
+        category_options = get_unique_categories()
+        category_index = category_options.index(str(selected["category"])) if str(selected["category"]) in category_options else 0
+        edit_category = e2.selectbox("Categoría", options=category_options, index=category_index)
         edit_stock = e3.number_input("Stock", min_value=0, step=1, value=int(selected["stock"]))
 
         e4, e5 = st.columns(2)
@@ -805,9 +825,15 @@ def inventory_tab() -> None:
 
         updated = st.form_submit_button("Guardar cambios")
         if updated:
-            update_product(int(selected_id), edit_name.strip(), edit_category.strip(), int(edit_stock), float(edit_cost), float(edit_price))
-            st.success("Producto actualizado.")
-            st.rerun()
+            clean_name = edit_name.strip()
+            if not clean_name:
+                st.error("El nombre del producto es obligatorio.")
+            elif product_exists_in_category(clean_name, edit_category, exclude_id=selected_id):
+                st.error("Ya existe un producto con ese nombre en la categoría seleccionada.")
+            else:
+                update_product(int(selected_id), clean_name, edit_category.strip(), int(edit_stock), float(edit_cost), float(edit_price))
+                st.success("Producto actualizado.")
+                st.rerun()
 
     st.markdown("### Eliminar producto")
     if st.button("Eliminar producto seleccionado", type="secondary"):
@@ -882,9 +908,31 @@ def dashboard_tab() -> None:
     st.subheader("Flujo de caja")
     sales_df = load_sales()
     costs_df = load_monthly_costs()
+    products_df = load_products()
 
-    daily_summary = build_daily_summary(sales_df)
-    monthly_summary = build_monthly_summary(sales_df, costs_df)
+    categories = sorted(products_df["category"].dropna().astype(str).unique().tolist()) if not products_df.empty else []
+    selected_category = st.selectbox("Filtrar por categoría", options=["Todas las categorías"] + categories, key="cashflow_category_filter")
+
+    if selected_category == "Todas las categorías":
+        product_options = sorted(products_df["name"].dropna().astype(str).unique().tolist()) if not products_df.empty else []
+    else:
+        product_options = (
+            products_df[products_df["category"] == selected_category]["name"]
+            .dropna()
+            .astype(str)
+            .unique()
+            .tolist()
+        )
+        product_options = sorted(product_options)
+
+    if selected_category != "Todas las categorías" and not product_options:
+        st.info("No hay productos para la categoría seleccionada.")
+
+    selected_product = st.selectbox("Filtrar por producto", options=["Todos los productos"] + product_options, key="cashflow_product_filter")
+    filtered_sales = filter_sales_by_category_product(sales_df, selected_category, selected_product)
+
+    daily_summary = build_daily_summary(filtered_sales)
+    monthly_summary = build_monthly_summary(filtered_sales, costs_df)
 
     st.markdown("### Resumen diario (ventas)")
     st.dataframe(daily_summary, use_container_width=True)
@@ -938,8 +986,7 @@ def dashboard_tab() -> None:
         st.info("Aún no hay datos suficientes para mostrar el panel mensual.")
 
     st.markdown("### Exportación a Excel (Power BI)")
-    products_df = load_products()
-    excel_bytes = generate_excel_file(products_df, sales_df, costs_df)
+    excel_bytes = generate_excel_file(products_df, filtered_sales, costs_df)
     st.download_button(
         label="Descargar Excel",
         data=excel_bytes,
